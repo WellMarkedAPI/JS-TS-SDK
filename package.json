@@ -1,0 +1,73 @@
+{
+  "name": "wellmarked",
+  "version": "1.1.1",
+  "description": "Official JavaScript/TypeScript SDK for the WellMarked API — convert any URL to clean Markdown.",
+  "keywords": [
+    "wellmarked",
+    "markdown",
+    "scraping",
+    "extraction",
+    "html-to-markdown",
+    "rag",
+    "llm",
+    "pipeline"
+  ],
+  "homepage": "https://wellmarked.io",
+  "bugs": {
+    "url": "https://github.com/WellMarkedAPI/WellMarked/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WellMarkedAPI/WellMarked.git",
+    "directory": "js-sdk"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "WellMarked",
+    "email": "support@wellmarked.io",
+    "url": "https://wellmarked.io"
+  },
+  "type": "module",
+  "main": "./dist/cjs/index.cjs",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "build": "npm run build:clean && npm run build:esm && npm run build:cjs && npm run build:types",
+    "build:clean": "rimraf dist",
+    "build:esm": "tsc -p tsconfig.build.json --module esnext --moduleResolution bundler --outDir dist/esm",
+    "build:cjs": "tsc -p tsconfig.build.json --module commonjs --moduleResolution node --outDir dist/cjs && node scripts/rename-cjs.mjs",
+    "build:types": "tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --outDir dist/types",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

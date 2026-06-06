@@ -1,0 +1,16 @@
+# Source files are included for sourcemap walks, but everything else stays out.
+.github/
+.vscode/
+.idea/
+node_modules/
+coverage/
+tests/
+scripts/
+*.log
+.DS_Store
+tsconfig.json
+tsconfig.build.json
+vitest.config.ts
+.eslintrc.cjs
+.eslintignore
+.editorconfig
