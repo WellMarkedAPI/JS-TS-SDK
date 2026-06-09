@@ -60,7 +60,7 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^25.9.2",
     "rimraf": "^5.0.5",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
