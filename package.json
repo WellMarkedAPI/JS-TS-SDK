@@ -14,12 +14,11 @@
   ],
   "homepage": "https://wellmarked.io",
   "bugs": {
-    "url": "https://github.com/WellMarkedAPI/WellMarked/issues"
+    "url": "https://github.com/WellMarkedAPI/JS-TS-SDK/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WellMarkedAPI/WellMarked.git",
-    "directory": "js-sdk"
+    "url": "git+https://github.com/WellMarkedAPI/JS-TS-SDK.git"
   },
   "license": "MIT",
   "author": {

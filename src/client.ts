@@ -222,7 +222,7 @@ export class WellMarked {
    *
    * Throws:
    *   - `PermissionDeniedError`     — `plan_not_supported` (Free tier).
-   *   - `UnprocessableEntityError`  — `bulk_cap_exceeded` (50 on Pro).
+   *   - `UnprocessableEntityError`  — `bulk_cap_exceeded` (50 on Pro, 200 on Growth).
    *   - `RateLimitError`            — would exceed remaining monthly quota.
    */
   async bulk(urls: Iterable<string>, options: BulkOptions = {}): Promise<BulkJob> {
@@ -323,7 +323,8 @@ export class WellMarked {
    *
    * Plan caps:
    *   - Free        → `PermissionDeniedError` (`plan_not_supported`)
-   *   - Pro         → max depth 5, up to 1,000 pages per crawl
+   *   - Pro         → max depth 5, up to 2,000 pages per crawl
+   *   - Growth      → max depth 10, up to 10,000 pages per crawl
    *   - Enterprise  → unlimited depth and pages
    *
    * Throws:

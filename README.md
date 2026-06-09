@@ -89,7 +89,7 @@ if (isCrawlJob(job)) {
 
 ## Crawl
 
-Crawl a site BFS-style from a root URL — same-site links only, with per-plan depth and page caps (Pro: depth 5, up to 2,000 pages; Growth: depth 5, up to 10,000 pages; Enterprise: unlimited). Like `bulk`, this returns a queued job; poll with `getJob` or block until done with `waitForJob` — the same two methods work on both kinds. Pass `renderJs: true` to fetch each page through Playwright instead of httpx; a single shared browser is launched at the start of the crawl and reused across pages.
+Crawl a site BFS-style from a root URL — same-site links only, with per-plan depth and page caps (Pro: depth 5, up to 2,000 pages; Growth: depth 10, up to 10,000 pages; Enterprise: unlimited). Like `bulk`, this returns a queued job; poll with `getJob` or block until done with `waitForJob` — the same two methods work on both kinds. Pass `renderJs: true` to fetch each page through Playwright instead of httpx; a single shared browser is launched at the start of the crawl and reused across pages.
 
 ```typescript
 let job = await wm.crawl("https://docs.example.com", { depth: 2 });
@@ -205,7 +205,7 @@ Pass `webhookIncludeResults: true` on submission to inline the full `results` ar
 * `X-WellMarked-Delivery-Id` is stable across retries — use it as your idempotency key. `X-WellMarked-Timestamp` and `X-WellMarked-Signature` are recomputed every attempt.
 * Treat delivery as **at-least-once**.
 
-See the [main README's Webhooks section](https://github.com/WellMarkedAPI/WellMarked#webhooks) for the full signature scheme and header reference.
+See the [Webhooks documentation](https://wellmarked.io/docs#webhooks) for the full signature scheme and header reference.
 
 ## Custom headers
 
@@ -334,7 +334,7 @@ If you are an agent, feel free to find additional context [here](https://wellmar
 
 Copyright © 2026 WellMarked. Released under the [MIT License](LICENSE).
 
-Source: <https://github.com/WellMarkedAPI/WellMarked/tree/master/js-sdk>
+Source: <https://github.com/WellMarkedAPI/JS-TS-SDK>
 
 Use of the hosted API at `api.wellmarked.io` remains subject to the
 [Terms of Service](https://wellmarked.io/terms).
