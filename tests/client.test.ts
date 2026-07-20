@@ -749,3 +749,438 @@ describe("request body", () => {
     });
   });
 });
+
+// ── Idempotency-Key ────────────────────────────────────────────────────────
+// The header is what makes a retried /bulk replay the original job instead of
+// double-charging the caller's quota. If the SDK silently stops sending it,
+// the API's protection is inert and nothing else would catch it.
+
+const QUEUED_JOB = {
+  job_id: "1c4f9a02-0000-0000-0000-000000000000",
+  status: "queued",
+  total: 1,
+  completed: 0,
+  results: [],
+};
+
+describe("idempotency", () => {
+  it("bulk() sends a generated Idempotency-Key when none is given", async () => {
+    mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+
+    await wm.bulk(["https://a.example"]);
+
+    expect(mock.calls[0]!.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("bulk() honours an explicit key", async () => {
+    mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+
+    await wm.bulk(["https://a.example"], { idempotencyKey: "caller-chosen" });
+
+    expect(mock.calls[0]!.headers["idempotency-key"]).toBe("caller-chosen");
+  });
+
+  it("gives each submission a distinct generated key", async () => {
+    // Two submissions are two operations — sharing a key would make the
+    // second replay the first one's job.
+    mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+
+    await wm.bulk(["https://a.example"]);
+    await wm.bulk(["https://b.example"]);
+
+    expect(mock.calls[0]!.headers["idempotency-key"]).not.toBe(
+      mock.calls[1]!.headers["idempotency-key"],
+    );
+  });
+
+  it("crawl() sends an Idempotency-Key", async () => {
+    mock.on("POST", "/crawl", () =>
+      jsonResponse(200, { ...QUEUED_JOB, kind: "crawl", total: 0 }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+
+    await wm.crawl("https://a.example");
+
+    expect(mock.calls[0]!.headers["idempotency-key"]).toBeTruthy();
+  });
+
+  it("a client-wide header cannot pin Idempotency-Key across submissions", async () => {
+    // setHeader is client-wide, so it's the wrong channel for idempotency.
+    // The per-request key must win, or every later bulk() would replay the
+    // first job.
+    mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    wm.setHeader("Idempotency-Key", "pinned-forever");
+
+    await wm.bulk(["https://a.example"]);
+    await wm.bulk(["https://b.example"]);
+
+    expect(mock.calls[0]!.headers["idempotency-key"]).not.toBe("pinned-forever");
+    expect(mock.calls[0]!.headers["idempotency-key"]).not.toBe(
+      mock.calls[1]!.headers["idempotency-key"],
+    );
+  });
+
+  it("per-request headers still cannot override Authorization", async () => {
+    mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+
+    await wm.bulk(["https://a.example"], { idempotencyKey: "k1" });
+
+    expect(mock.calls[0]!.headers["authorization"]).toBe(`Bearer ${API_KEY}`);
+  });
+});
+
+// ── Internal retry ─────────────────────────────────────────────────────────
+// Retries exist so the auto-generated Idempotency-Key is worth something: a
+// connection blip is ambiguous (the job may already exist), and replaying with
+// the SAME key collapses the attempts into one job instead of two.
+
+describe("retry", () => {
+  it("retries a connection failure on bulk and reuses the same key", async () => {
+    let attempts = 0;
+    const seenKeys: string[] = [];
+    const failingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      attempts++;
+      const h = init!.headers as Record<string, string>;
+      seenKeys.push(h["Idempotency-Key"]!);
+      if (attempts === 1) throw new TypeError("network down");
+      return jsonResponse(200, QUEUED_JOB);
+    }) as typeof fetch;
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    const job = await wm.bulk(["https://a.example"]);
+
+    expect(attempts).toBe(2);
+    expect(job.status).toBe("queued");
+    // The whole point: both attempts carry the SAME key, so the API replays
+    // rather than creating a second job.
+    expect(seenKeys[0]).toBe(seenKeys[1]);
+  });
+
+  it("does NOT retry POST /extract — the API bills it on arrival", async () => {
+    // A connection error can't tell us whether the extraction happened.
+    // /extract takes no Idempotency-Key, so replaying could bill twice.
+    let attempts = 0;
+    const failingFetch = (async () => {
+      attempts++;
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    await expect(wm.extract("https://a.example")).rejects.toBeInstanceOf(APIConnectionError);
+    expect(attempts).toBe(1);
+  });
+
+  it("retries 5xx but not 4xx", async () => {
+    let attempts = 0;
+    const flaky = (async () => {
+      attempts++;
+      if (attempts === 1) return jsonResponse(503, { error: { code: "x", message: "down" } });
+      return jsonResponse(200, QUEUED_JOB);
+    }) as typeof fetch;
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: flaky });
+    await wm.bulk(["https://a.example"]);
+    expect(attempts).toBe(2);
+
+    let attempts4xx = 0;
+    const deterministic = (async () => {
+      attempts4xx++;
+      return jsonResponse(422, {
+        error: { code: "bulk_cap_exceeded", message: "too many" },
+      });
+    }) as typeof fetch;
+    const wm2 = new WellMarked({ apiKey: API_KEY, fetch: deterministic });
+    await expect(wm2.bulk(["https://a.example"])).rejects.toBeInstanceOf(
+      UnprocessableEntityError,
+    );
+    // 4xx is deterministic — replaying just reproduces it.
+    expect(attempts4xx).toBe(1);
+  });
+
+  it("gives up after maxRetries and surfaces the connection error", async () => {
+    let attempts = 0;
+    const alwaysDown = (async () => {
+      attempts++;
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: alwaysDown, maxRetries: 1 });
+    await expect(wm.bulk(["https://a.example"])).rejects.toBeInstanceOf(APIConnectionError);
+    expect(attempts).toBe(2);
+  });
+
+  it("maxRetries: 0 disables retrying entirely", async () => {
+    let attempts = 0;
+    const alwaysDown = (async () => {
+      attempts++;
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: alwaysDown, maxRetries: 0 });
+    await expect(wm.bulk(["https://a.example"])).rejects.toBeInstanceOf(APIConnectionError);
+    expect(attempts).toBe(1);
+  });
+
+  it("a client-wide Idempotency-Key must NOT make /extract retryable", async () => {
+    // Regression: safeToReplay once read the MERGED headers. Idempotency-Key
+    // isn't reserved, so setHeader() could smuggle one onto every request —
+    // making POST /extract look replay-safe. The API bills /extract on
+    // arrival and ignores the header, so retrying it double-charges.
+    let attempts = 0;
+    const failingFetch = (async () => {
+      attempts++;
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    wm.setHeader("Idempotency-Key", "smuggled");
+
+    await expect(wm.extract("https://a.example")).rejects.toBeInstanceOf(APIConnectionError);
+    expect(attempts).toBe(1);
+  });
+
+  it("a constructor-level Idempotency-Key must NOT make /extract retryable", async () => {
+    let attempts = 0;
+    const failingFetch = (async () => {
+      attempts++;
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    const wm = new WellMarked({
+      apiKey: API_KEY,
+      fetch: failingFetch,
+      headers: { "Idempotency-Key": "smuggled" },
+    });
+
+    await expect(wm.extract("https://a.example")).rejects.toBeInstanceOf(APIConnectionError);
+    expect(attempts).toBe(1);
+  });
+});
+
+// ── Phase 5 continuity: policy overrides, key CRUD, logs ─────────────────────
+
+describe("policy overrides", () => {
+  it("sends allow_domains / deny_patterns / respect_robots on extract", async () => {
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        markdown: "# ok",
+        metadata: { url: "https://a.example" },
+        request_id: "r1",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await wm.extract("https://a.example", {
+      allowDomains: ["a.example"],
+      denyPatterns: ["*/admin/*"],
+      respectRobots: "strict",
+    });
+    const sent = mock.calls.at(-1)!.body as Record<string, unknown>;
+    expect(sent.allow_domains).toEqual(["a.example"]);
+    expect(sent.deny_patterns).toEqual(["*/admin/*"]);
+    expect(sent.respect_robots).toBe("strict");
+  });
+
+  it("omits policy fields left unset (never clobbers the key's policy)", async () => {
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        markdown: "# ok",
+        metadata: { url: "https://a.example" },
+        request_id: "r1",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await wm.extract("https://a.example");
+    const sent = mock.calls.at(-1)!.body as Record<string, unknown>;
+    expect("allow_domains" in sent).toBe(false);
+    expect("deny_patterns" in sent).toBe(false);
+    expect("respect_robots" in sent).toBe(false);
+  });
+
+  it("surfaces a policy denial on extract as PermissionDeniedError", async () => {
+    mock.on("POST", "/extract", () =>
+      jsonResponse(403, {
+        error: { code: "domain_denied", message: "denied", retry: false },
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await expect(wm.extract("https://blocked.example")).rejects.toMatchObject({
+      code: "domain_denied",
+    });
+    await expect(wm.extract("https://blocked.example")).rejects.toBeInstanceOf(
+      PermissionDeniedError,
+    );
+  });
+});
+
+describe("key management", () => {
+  it("createKey posts scopes + name and returns the raw key once", async () => {
+    mock.on("POST", "/keys", () =>
+      jsonResponse(200, {
+        id: "k1",
+        api_key: "wm_" + "b".repeat(40),
+        name: "ci",
+        scopes: ["extract"],
+        created_at: "2026-07-17T00:00:00Z",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const key = await wm.createKey(["extract"], { name: "ci" });
+    expect(key.apiKey.startsWith("wm_")).toBe(true);
+    expect(key.scopes).toEqual(["extract"]);
+    expect(mock.calls.at(-1)!.body).toEqual({ scopes: ["extract"], name: "ci" });
+  });
+
+  it("listKeys returns metadata with an active flag", async () => {
+    mock.on("GET", "/keys", () =>
+      jsonResponse(200, {
+        keys: [
+          { id: "k1", name: "default", scopes: ["*"], created_at: "2026-07-01T00:00:00Z", revoked_at: null },
+          { id: "k2", name: "ci", scopes: ["extract"], created_at: "2026-07-02T00:00:00Z", revoked_at: "2026-07-03T00:00:00Z" },
+        ],
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const keys = await wm.listKeys();
+    expect(keys.map((k) => k.id)).toEqual(["k1", "k2"]);
+    expect(keys[0]!.active).toBe(true);
+    expect(keys[1]!.active).toBe(false);
+  });
+
+  it("revokeKey issues a DELETE and returns the revocation", async () => {
+    mock.on("DELETE", "/keys/k2", () =>
+      jsonResponse(200, { id: "k2", revoked_at: "2026-07-03T00:00:00Z" }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const revoked = await wm.revokeKey("k2");
+    expect(revoked.id).toBe("k2");
+    expect(mock.calls.at(-1)!.method).toBe("DELETE");
+  });
+});
+
+describe("getLogs", () => {
+  it("passes limit/offset and parses policy_decision + key_id", async () => {
+    mock.on("GET", "/logs", () =>
+      jsonResponse(200, {
+        logs: [
+          {
+            id: "r1",
+            timestamp: "2026-07-17T00:00:00Z",
+            target_url: "https://a.example",
+            status_code: 403,
+            duration_ms: 3,
+            error_code: "domain_denied",
+            render_js: false,
+            key_id: "k1",
+            policy_decision: "domain_denied",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        has_more: true,
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const page = await wm.getLogs({ limit: 50, offset: 0 });
+    expect(page.hasMore).toBe(true);
+    expect(page.logs[0]!.policyDecision).toBe("domain_denied");
+    expect(page.logs[0]!.keyId).toBe("k1");
+    expect(mock.calls.at(-1)!.url).toContain("limit=50");
+    expect(mock.calls.at(-1)!.url).toContain("offset=0");
+  });
+});
+
+// ── Phase 6: self-registration ───────────────────────────────────────────────
+
+describe("register (static)", () => {
+  it("posts email with no auth header and returns the account", async () => {
+    mock.on("POST", "/register", () =>
+      jsonResponse(200, {
+        api_key: "wm_" + "d".repeat(40),
+        user_id: "u1",
+        plan: "free",
+        scopes: ["extract"],
+      }),
+    );
+    const account = await WellMarked.register("agent@example.com", {
+      baseUrl: BASE_URL,
+      fetch: mock.fetch,
+    });
+    expect(account.apiKey.startsWith("wm_")).toBe(true);
+    expect(account.plan).toBe("free");
+    expect(account.scopes).toEqual(["extract"]);
+    const sent = mock.calls.at(-1)!;
+    expect("authorization" in sent.headers).toBe(false);
+    expect(sent.body).toEqual({ email: "agent@example.com" });
+  });
+
+  it("throws RateLimitError on register_rate_limited", async () => {
+    mock.on("POST", "/register", () =>
+      jsonResponse(429, {
+        error: { code: "register_rate_limited", message: "slow down", retry: true },
+      }),
+    );
+    await expect(
+      WellMarked.register("agent@example.com", { baseUrl: BASE_URL, fetch: mock.fetch }),
+    ).rejects.toMatchObject({ code: "register_rate_limited" });
+  });
+});
+
+// ── Search ─────────────────────────────────────────────────────────────────
+
+describe("search", () => {
+  const SEARCH_BODY = {
+    query: "typescript generics",
+    results: [
+      { url: "https://a.test/1", status: "ok", title: "A", snippet: "s1", markdown: "# A" },
+      { url: "https://b.test/2", status: "error", title: "B", snippet: "s2", error: "target_timeout" },
+    ],
+    request_id: "33333333-3333-3333-3333-333333333333",
+  };
+
+  it("returns parsed results and sends the expected payload", async () => {
+    mock.on("POST", "/search", () => jsonResponse(200, SEARCH_BODY));
+
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const res = await wm.search("typescript generics", { numResults: 2 });
+
+    // Request shape reached the server unchanged.
+    expect(mock.calls.at(-1)?.body).toEqual({
+      query: "typescript generics",
+      num_results: 2,
+      render_js: false,
+    });
+
+    expect(res.query).toBe("typescript generics");
+    expect(res.requestId).toBe("33333333-3333-3333-3333-333333333333");
+    expect(res.results).toHaveLength(2);
+    const ok = res.results[0]!;
+    const err = res.results[1]!;
+    expect(ok.ok).toBe(true);
+    expect(ok.markdown).toBe("# A");
+    expect(ok.title).toBe("A");
+    // A failed page still carries the provider snippet + a stable error code.
+    expect(err.ok).toBe(false);
+    expect(err.error).toBe("target_timeout");
+    expect(err.snippet).toBe("s2");
+  });
+
+  it("defaults num_results to 5 when omitted", async () => {
+    mock.on("POST", "/search", () => jsonResponse(200, { ...SEARCH_BODY, results: [] }));
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await wm.search("q");
+    expect((mock.calls.at(-1)?.body as { num_results: number }).num_results).toBe(5);
+  });
+
+  it("throws PermissionDeniedError on the Pro+ plan gate", async () => {
+    mock.on("POST", "/search", () =>
+      jsonResponse(403, { error: { code: "plan_not_supported", message: "Pro+ only." } }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await expect(wm.search("q")).rejects.toBeInstanceOf(PermissionDeniedError);
+    await expect(wm.search("q")).rejects.toMatchObject({ code: "plan_not_supported" });
+  });
+});

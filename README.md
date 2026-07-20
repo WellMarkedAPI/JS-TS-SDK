@@ -273,7 +273,7 @@ try {
   if (err instanceof RateLimitError) {
     console.log(`Quota hit. Resets in ${err.retryAfter}s.`);
   } else if (err instanceof UnprocessableEntityError) {
-    // err.code is one of: no_content, target_timeout, js_rendering_disabled, ...
+    // err.code is one of: no_content, target_timeout, ...
     console.log(`Extraction failed (${err.code}): ${err.message}`);
   } else {
     throw err;
@@ -286,7 +286,7 @@ try {
 | `AuthenticationError`      | 401  | `missing_api_key`, `invalid_api_key`                                                                 |
 | `PermissionDeniedError`    | 403  | `account_inactive`, `plan_not_supported`, `forbidden`                                                |
 | `NotFoundError`            | 404  | `job_not_found`                                                                                      |
-| `UnprocessableEntityError` | 422  | `no_content`, `target_timeout`, `js_rendering_disabled`, `bulk_cap_exceeded`, `crawl_depth_exceeded` |
+| `UnprocessableEntityError` | 422  | `no_content`, `target_timeout`, `bulk_cap_exceeded`, `crawl_depth_exceeded`                          |
 | `RateLimitError`           | 429  | `rate_limit_too_fast` *(per-second cap; `retryAfterMs` carries the sub-second back-off)* · `rate_limit_exceeded` *(monthly quota; `retryAfter` in seconds)* |
 | `InternalServerError`      | 5xx  | —                                                                                                    |
 | `APIConnectionError`       | —    | DNS / TCP / TLS / timeout failures, raised before any HTTP round-trip                                |

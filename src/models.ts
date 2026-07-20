@@ -63,14 +63,81 @@ export function extractResultFromResponse(body: Record<string, unknown>): Extrac
   };
 }
 
+// ── Search ───────────────────────────────────────────────────────────────────
+
+/**
+ * One result in a `SearchResults`.
+ *
+ * On success `status === "ok"` and `markdown` is populated; on a per-page
+ * failure `status === "error"` and `error` carries a stable code (same
+ * convention as `BulkItem.error`). `title` is the extracted title on success,
+ * else the search provider's; `snippet` is always the provider's result
+ * snippet, so a page that failed extraction still carries context.
+ */
+export interface SearchResult {
+  url: string;
+  status: "ok" | "error";
+  title: string | null;
+  snippet: string | null;
+  markdown: string | null;
+  error: string | null;
+  /** True when `status === "ok"`. */
+  readonly ok: boolean;
+}
+
+export function searchResultFromDict(data: Record<string, unknown>): SearchResult {
+  const url = typeof data.url === "string" ? data.url : "";
+  const status: "ok" | "error" = data.status === "ok" ? "ok" : "error";
+  const title = typeof data.title === "string" ? data.title : null;
+  const snippet = typeof data.snippet === "string" ? data.snippet : null;
+  const markdown = typeof data.markdown === "string" ? data.markdown : null;
+  const error = typeof data.error === "string" ? data.error : null;
+  return {
+    url,
+    status,
+    title,
+    snippet,
+    markdown,
+    error,
+    get ok(): boolean {
+      return this.status === "ok";
+    },
+  };
+}
+
+/**
+ * Result of `POST /search` — the query plus the extracted result pages.
+ * Synchronous: unlike bulk/crawl there is no job to poll; `results` is already
+ * populated, with partial failures marked per item.
+ */
+export interface SearchResults {
+  query: string;
+  results: SearchResult[];
+  requestId: string;
+}
+
+export function searchResultsFromResponse(body: Record<string, unknown>): SearchResults {
+  const rawResults = Array.isArray(body.results) ? body.results : [];
+  const results = rawResults
+    .filter((r): r is Record<string, unknown> => r !== null && typeof r === "object")
+    .map(searchResultFromDict);
+  return {
+    query: typeof body.query === "string" ? body.query : "",
+    results,
+    requestId: typeof body.request_id === "string" ? body.request_id : "",
+  };
+}
+
 // ── Bulk ─────────────────────────────────────────────────────────────────────
 
 /**
  * One entry in a bulk job's `results` list.
  *
  * On success, `markdown` and `metadata` are populated and `error` is null.
- * On a per-URL failure, `markdown`/`metadata` are null and `error` carries
- * an API error code (e.g. `target_timeout`).
+ * On a per-URL failure, `markdown`/`metadata` are null and `error` carries a
+ * stable API error *code* — never a human message — e.g. `target_timeout`,
+ * `domain_denied`, `internal_error`. Same convention as `CrawlItem.error`, so
+ * results parse identically on either endpoint.
  */
 export interface BulkItem {
   url: string;
@@ -353,6 +420,156 @@ export function rotatedWebhookSecretFromResponse(
         ? body.webhook_signing_secret
         : "",
     rotatedAt: parseDate(body.rotated_at),
+  };
+}
+
+// ── Self-registration ────────────────────────────────────────────────────────
+
+/**
+ * Result of `WellMarked.register` (`POST /register`).
+ *
+ * `apiKey` is the new raw key — shown once, store it. The account is
+ * deliberately weak: `plan === "free"` and `scopes === ["extract"]`. Build a
+ * client with it via `new WellMarked({ apiKey: account.apiKey })`.
+ */
+export interface RegisteredAccount {
+  apiKey: string;
+  userId: string;
+  plan: string;
+  scopes: string[];
+}
+
+export function registeredAccountFromResponse(
+  body: Record<string, unknown>,
+): RegisteredAccount {
+  return {
+    apiKey: typeof body.api_key === "string" ? body.api_key : "",
+    userId: typeof body.user_id === "string" ? body.user_id : "",
+    plan: typeof body.plan === "string" ? body.plan : "",
+    scopes: Array.isArray(body.scopes) ? (body.scopes as string[]) : [],
+  };
+}
+
+// ── Key management (scoped keys) ─────────────────────────────────────────────
+
+/**
+ * Result of `createKey` (`POST /keys`). `apiKey` is the new raw key — shown
+ * once, store it before discarding this object. `scopes` is the subset it was
+ * granted (extract / bulk / crawl / keys).
+ */
+export interface CreatedKey {
+  id: string;
+  apiKey: string;
+  name: string;
+  scopes: string[];
+  createdAt: Date | null;
+}
+
+export function createdKeyFromResponse(body: Record<string, unknown>): CreatedKey {
+  return {
+    id: typeof body.id === "string" ? body.id : "",
+    apiKey: typeof body.api_key === "string" ? body.api_key : "",
+    name: typeof body.name === "string" ? body.name : "",
+    scopes: Array.isArray(body.scopes) ? (body.scopes as string[]) : [],
+    createdAt: parseDate(body.created_at),
+  };
+}
+
+/**
+ * One key's metadata from `listKeys` (`GET /keys`). Never carries the raw key.
+ * `revokedAt` is set once the key has been revoked; `active` is a convenience.
+ */
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  scopes: string[];
+  createdAt: Date | null;
+  revokedAt: Date | null;
+  readonly active: boolean;
+}
+
+export function apiKeyInfoFromDict(data: Record<string, unknown>): ApiKeyInfo {
+  return {
+    id: typeof data.id === "string" ? data.id : "",
+    name: typeof data.name === "string" ? data.name : "",
+    scopes: Array.isArray(data.scopes) ? (data.scopes as string[]) : [],
+    createdAt: parseDate(data.created_at),
+    revokedAt: parseDate(data.revoked_at),
+    get active(): boolean {
+      return this.revokedAt === null;
+    },
+  };
+}
+
+/** Result of `revokeKey` (`DELETE /keys/{id}`). */
+export interface RevokedKey {
+  id: string;
+  revokedAt: Date | null;
+}
+
+export function revokedKeyFromResponse(body: Record<string, unknown>): RevokedKey {
+  return {
+    id: typeof body.id === "string" ? body.id : "",
+    revokedAt: parseDate(body.revoked_at),
+  };
+}
+
+// ── Audit log ────────────────────────────────────────────────────────────────
+
+/**
+ * One row of your request history from `getLogs` (`GET /logs`).
+ *
+ * `policyDecision` records how the key's compliance policy decided:
+ * `"allowed"` | `"domain_not_allowed"` | `"domain_denied"` |
+ * `"robots_disallowed"`. `keyId` attributes the request to a key.
+ */
+export interface LogEntry {
+  id: string;
+  timestamp: Date | null;
+  targetUrl: string;
+  statusCode: number;
+  durationMs: number;
+  errorCode: string | null;
+  renderJs: boolean | null;
+  keyId: string | null;
+  policyDecision: string | null;
+}
+
+export function logEntryFromDict(data: Record<string, unknown>): LogEntry {
+  return {
+    id: typeof data.id === "string" ? data.id : "",
+    timestamp: parseDate(data.timestamp),
+    targetUrl: typeof data.target_url === "string" ? data.target_url : "",
+    statusCode: typeof data.status_code === "number" ? data.status_code : 0,
+    durationMs: typeof data.duration_ms === "number" ? data.duration_ms : 0,
+    errorCode: typeof data.error_code === "string" ? data.error_code : null,
+    renderJs: typeof data.render_js === "boolean" ? data.render_js : null,
+    keyId: typeof data.key_id === "string" ? data.key_id : null,
+    policyDecision:
+      typeof data.policy_decision === "string" ? data.policy_decision : null,
+  };
+}
+
+/**
+ * One page of `getLogs` results. `hasMore` is true when further rows exist
+ * beyond this page — advance by `offset += limit`.
+ */
+export interface LogsPage {
+  logs: LogEntry[];
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export function logsPageFromResponse(body: Record<string, unknown>): LogsPage {
+  const rawLogs = Array.isArray(body.logs) ? body.logs : [];
+  return {
+    logs: rawLogs
+      .filter((r): r is Record<string, unknown> => r !== null && typeof r === "object")
+      .map(logEntryFromDict),
+    limit: typeof body.limit === "number" ? body.limit : 0,
+    offset: typeof body.offset === "number" ? body.offset : 0,
+    hasMore: body.has_more === true,
   };
 }
 
