@@ -27,6 +27,7 @@ import {
   type CreatedKey,
   type ExtractResult,
   type LogsPage,
+  type OutputFormat,
   type RegisteredAccount,
   type RevokedKey,
   type RotatedKey,
@@ -127,6 +128,14 @@ export interface ExtractOptions extends PolicyOverrideOptions {
    * Enterprise plan; Free returns `plan_not_supported`.
    */
   renderJs?: boolean;
+  /**
+   * Output format. `"markdown"` (default), `"json"` (typed
+   * heading/paragraph/list/code blocks), `"chunks"` (contiguous 500-token
+   * windows for embedding), `"html"` (the raw fetched HTML) or `"links"`
+   * (every http(s) link found). The result populates the matching field;
+   * the others stay null. Use `contentOf(result)` to read whichever it is.
+   */
+  format?: OutputFormat;
 }
 
 /** Options for `search`. */
@@ -222,12 +231,28 @@ export interface JobWebhookOptions {
 
 export interface BulkOptions extends JobWebhookOptions, PolicyOverrideOptions {
   renderJs?: boolean;
+  /**
+   * Output format. `"markdown"` (default), `"json"` (typed
+   * heading/paragraph/list/code blocks), `"chunks"` (contiguous 500-token
+   * windows for embedding), `"html"` (the raw fetched HTML) or `"links"`
+   * (every http(s) link found). The result populates the matching field;
+   * the others stay null. Use `contentOf(result)` to read whichever it is.
+   */
+  format?: OutputFormat;
 }
 
 export interface CrawlOptions extends JobWebhookOptions, PolicyOverrideOptions {
   /** Max BFS depth from the root. Defaults to 1. Must be >= 0. */
   depth?: number;
   renderJs?: boolean;
+  /**
+   * Output format. `"markdown"` (default), `"json"` (typed
+   * heading/paragraph/list/code blocks), `"chunks"` (contiguous 500-token
+   * windows for embedding), `"html"` (the raw fetched HTML) or `"links"`
+   * (every http(s) link found). The result populates the matching field;
+   * the others stay null. Use `contentOf(result)` to read whichever it is.
+   */
+  format?: OutputFormat;
 }
 
 export interface WaitForJobOptions {
@@ -436,6 +461,7 @@ export class WellMarked {
     const body = await this.request("POST", "/extract", {
       url,
       render_js: options.renderJs === true,
+      format: options.format ?? "markdown",
       ...policyOverrides(options),
     });
     return extractResultFromResponse(body as Record<string, unknown>);
@@ -494,6 +520,7 @@ export class WellMarked {
     const payload: Record<string, unknown> = {
       urls: urlList,
       render_js: options.renderJs === true,
+      format: options.format ?? "markdown",
       ...policyOverrides(options),
     };
     if (options.webhookUrl !== undefined) {
@@ -604,6 +631,7 @@ export class WellMarked {
       url,
       depth,
       render_js: options.renderJs === true,
+      format: options.format ?? "markdown",
       ...policyOverrides(options),
     };
     if (options.webhookUrl !== undefined) {

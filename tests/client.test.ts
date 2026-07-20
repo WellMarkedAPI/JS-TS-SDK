@@ -14,8 +14,10 @@ import {
   UnprocessableEntityError,
   WellMarked,
   WellMarkedError,
+  contentOf,
   isCrawlJob,
 } from "../src/index.js";
+import { bulkItemFromDict } from "../src/models.js";
 import { MockFetch, emptyResponse, jsonResponse } from "./helpers.js";
 
 const API_KEY = "wm_" + "a".repeat(40);
@@ -151,8 +153,20 @@ describe("extract", () => {
     const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
     const result = await wm.extract("https://example.com");
     expect(new Set(Object.keys(result))).toEqual(
-      new Set(["markdown", "metadata", "requestId"]),
+      new Set([
+        "markdown",
+        "blocks",
+        "chunks",
+        "html",
+        "links",
+        "metrics",
+        "metadata",
+        "requestId",
+      ]),
     );
+    // The default format still lands in `markdown`, unchanged.
+    expect(result.markdown).toBe("x");
+    expect(result.blocks).toBeNull();
   });
 });
 
@@ -723,7 +737,11 @@ describe("request body", () => {
     const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
     await wm.extract("https://example.com", { renderJs: true });
     const call = mock.calls[0]!;
-    expect(call.body).toEqual({ url: "https://example.com", render_js: true });
+    expect(call.body).toEqual({
+      url: "https://example.com",
+      render_js: true,
+      format: "markdown",
+    });
   });
 
   it("sends url + depth + render_js on crawl", async () => {
@@ -746,6 +764,7 @@ describe("request body", () => {
       url: "https://example.com",
       depth: 2,
       render_js: false,
+      format: "markdown",
     });
   });
 });
@@ -1182,5 +1201,113 @@ describe("search", () => {
     const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
     await expect(wm.search("q")).rejects.toBeInstanceOf(PermissionDeniedError);
     await expect(wm.search("q")).rejects.toMatchObject({ code: "plan_not_supported" });
+  });
+});
+
+// ── Output formats (Phase 4.5) ──────────────────────────────────────────────
+// The format param must reach the wire, and each format's payload must land in
+// its own field. Content silently arriving as null would look to the caller
+// like a successful-but-empty extraction.
+
+describe("output formats", () => {
+  it("sends format and parses json blocks + metrics", async () => {
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        blocks: [
+          { type: "heading", text: "Title", level: 1 },
+          { type: "paragraph", text: "Body text.", level: null },
+        ],
+        metrics: {
+          content_bytes: 8000,
+          input_tokens: 2000,
+          output_tokens: 500,
+          tokens_saved: 1500,
+          reduction_pct: 75.0,
+        },
+        metadata: { url: "https://example.com" },
+        request_id: "id",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const result = await wm.extract("https://example.com", { format: "json" });
+
+    expect((mock.calls[0]!.body as Record<string, unknown>).format).toBe("json");
+    expect(result.markdown).toBeNull();
+    expect(result.blocks?.map((b) => b.type)).toEqual(["heading", "paragraph"]);
+    expect(result.blocks?.[0]!.level).toBe(1);
+    expect(result.blocks?.[1]!.level).toBeNull();
+    expect(result.metrics?.tokensSaved).toBe(1500);
+    expect(result.metrics?.reductionPct).toBe(75.0);
+    expect(contentOf(result)).toEqual(result.blocks);
+  });
+
+  it("parses chunks with contiguous snake_case offsets", async () => {
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        chunks: [
+          { text: "first ", start_token: 0, end_token: 500 },
+          { text: "second", start_token: 500, end_token: 812 },
+        ],
+        metadata: { url: "https://example.com" },
+        request_id: "id",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const result = await wm.extract("https://example.com", { format: "chunks" });
+
+    expect(result.chunks?.map((c) => c.startToken)).toEqual([0, 500]);
+    // Contiguity survives the snake_case → camelCase mapping.
+    expect(result.chunks?.[0]!.endToken).toBe(result.chunks?.[1]!.startToken);
+  });
+
+  it("forwards format on bulk and crawl", async () => {
+    mock.on("POST", "/bulk", () =>
+      jsonResponse(200, {
+        job_id: "j",
+        kind: "bulk",
+        status: "queued",
+        total: 1,
+        completed: 0,
+        results: [],
+      }),
+    );
+    mock.on("POST", "/crawl", () =>
+      jsonResponse(200, {
+        job_id: "c",
+        kind: "crawl",
+        status: "queued",
+        total: 0,
+        completed: 0,
+        truncated: false,
+        truncated_reason: null,
+        results: [],
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    await wm.bulk(["https://a.test"], { format: "links" });
+    await wm.crawl("https://b.test", { format: "html" });
+
+    expect((mock.calls[0]!.body as Record<string, unknown>).format).toBe("links");
+    expect((mock.calls[1]!.body as Record<string, unknown>).format).toBe("html");
+  });
+
+  it("marks a non-markdown bulk item as ok", () => {
+    // Negative control: keying `ok` on `markdown !== null` (as it did before
+    // formats existed) reports every successful links/html/chunks item failed.
+    const item = bulkItemFromDict({
+      url: "https://a.test",
+      links: ["https://a.test/x"],
+      error: null,
+    });
+    expect(item.ok).toBe(true);
+    expect(item.markdown).toBeNull();
+    expect(contentOf(item)).toEqual(["https://a.test/x"]);
+
+    const failed = bulkItemFromDict({
+      url: "https://b.test",
+      error: "target_timeout",
+    });
+    expect(failed.ok).toBe(false);
+    expect(contentOf(failed)).toBeNull();
   });
 });

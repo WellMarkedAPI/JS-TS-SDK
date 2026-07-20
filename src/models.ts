@@ -44,9 +44,133 @@ export function extractionMetaFromDict(data: Record<string, unknown>): Extractio
   };
 }
 
-/** Result of `POST /extract`. */
-export interface ExtractResult {
-  markdown: string;
+// ── Output formats ───────────────────────────────────────────────────────────
+
+/** Output format for `extract` / `bulk` / `crawl`. */
+export type OutputFormat = "markdown" | "json" | "chunks" | "html" | "links";
+
+/** One typed block of a `format: "json"` document. */
+export interface ContentBlock {
+  type: "heading" | "paragraph" | "list" | "code";
+  text: string;
+  /** 1-6 for headings; null for every other type. */
+  level: number | null;
+}
+
+/**
+ * One token window of a `format: "chunks"` document.
+ *
+ * Offsets index into the document's token stream and are contiguous —
+ * `chunks[i].endToken === chunks[i + 1].startToken` — so joining every `text`
+ * reproduces exactly what `format: "markdown"` would have returned. Windows are
+ * 500 tokens except where that would bisect a multi-byte character, in which
+ * case they run a token or two longer.
+ */
+export interface Chunk {
+  text: string;
+  startToken: number;
+  endToken: number;
+}
+
+/**
+ * How much the extraction reduced the page, in tokens.
+ *
+ * `tokensSaved` is `inputTokens - outputTokens`: what you did NOT have to send
+ * a model versus feeding it the raw HTML. Every token field is null if the API
+ * could not load its tokenizer — the extraction still succeeds, the metrics
+ * just go unreported.
+ */
+export interface ContentMetrics {
+  contentBytes: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  tokensSaved: number | null;
+  reductionPct: number | null;
+}
+
+/**
+ * The format-dependent content fields shared by every extraction result.
+ *
+ * Exactly one of `markdown`/`blocks`/`chunks`/`html`/`links` is populated —
+ * whichever the request's `format` selected. `markdown` is the default, so code
+ * written before formats existed keeps working unchanged.
+ */
+export interface Content {
+  markdown: string | null;
+  blocks: ContentBlock[] | null;
+  chunks: Chunk[] | null;
+  html: string | null;
+  links: string[] | null;
+  metrics: ContentMetrics | null;
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" ? v : null;
+}
+
+function contentFromDict(data: Record<string, unknown>): Content {
+  const rawBlocks = data.blocks;
+  const rawChunks = data.chunks;
+  const rawMetrics = data.metrics;
+  const rawLinks = data.links;
+
+  return {
+    markdown: typeof data.markdown === "string" ? data.markdown : null,
+    blocks: Array.isArray(rawBlocks)
+      ? rawBlocks.map((b) => {
+          const o = b as Record<string, unknown>;
+          return {
+            type: (typeof o.type === "string" ? o.type : "paragraph") as ContentBlock["type"],
+            text: typeof o.text === "string" ? o.text : "",
+            level: numOrNull(o.level),
+          };
+        })
+      : null,
+    chunks: Array.isArray(rawChunks)
+      ? rawChunks.map((c) => {
+          const o = c as Record<string, unknown>;
+          return {
+            text: typeof o.text === "string" ? o.text : "",
+            startToken: typeof o.start_token === "number" ? o.start_token : 0,
+            endToken: typeof o.end_token === "number" ? o.end_token : 0,
+          };
+        })
+      : null,
+    html: typeof data.html === "string" ? data.html : null,
+    links: Array.isArray(rawLinks) ? rawLinks.filter((l): l is string => typeof l === "string") : null,
+    metrics:
+      rawMetrics && typeof rawMetrics === "object"
+        ? (() => {
+            const m = rawMetrics as Record<string, unknown>;
+            return {
+              contentBytes: typeof m.content_bytes === "number" ? m.content_bytes : 0,
+              inputTokens: numOrNull(m.input_tokens),
+              outputTokens: numOrNull(m.output_tokens),
+              tokensSaved: numOrNull(m.tokens_saved),
+              reductionPct: numOrNull(m.reduction_pct),
+            };
+          })()
+        : null,
+  };
+}
+
+/**
+ * Whichever content field the response actually populated, or null.
+ *
+ * Handy when you don't care which format came back; read the specific field
+ * when you need a precise static type.
+ */
+export function contentOf(item: Content): string | ContentBlock[] | Chunk[] | string[] | null {
+  return item.markdown ?? item.blocks ?? item.chunks ?? item.html ?? item.links ?? null;
+}
+
+/**
+ * Result of `POST /extract`.
+ *
+ * `markdown` is populated for the default `format: "markdown"`; other formats
+ * populate their own field instead (see `Content`).
+ */
+export interface ExtractResult extends Content {
   metadata: ExtractionMeta;
   requestId: string;
 }
@@ -57,7 +181,7 @@ export function extractResultFromResponse(body: Record<string, unknown>): Extrac
       ? (body.metadata as Record<string, unknown>)
       : {};
   return {
-    markdown: typeof body.markdown === "string" ? body.markdown : "",
+    ...contentFromDict(body),
     metadata: extractionMetaFromDict(rawMeta),
     requestId: typeof body.request_id === "string" ? body.request_id : "",
   };
@@ -139,35 +263,36 @@ export function searchResultsFromResponse(body: Record<string, unknown>): Search
  * `domain_denied`, `internal_error`. Same convention as `CrawlItem.error`, so
  * results parse identically on either endpoint.
  */
-export interface BulkItem {
+export interface BulkItem extends Content {
   url: string;
-  markdown: string | null;
   metadata: ExtractionMeta | null;
   error: string | null;
-  /** True when the item completed successfully (no error + has markdown). */
+  /** True when the item completed successfully (no error + has content). */
   readonly ok: boolean;
 }
 
 export function bulkItemFromDict(data: Record<string, unknown>): BulkItem {
   const rawMeta = data.metadata;
   const url = typeof data.url === "string" ? data.url : "";
-  const markdown = typeof data.markdown === "string" ? data.markdown : null;
   const error = typeof data.error === "string" ? data.error : null;
   const metadata =
     rawMeta && typeof rawMeta === "object"
       ? extractionMetaFromDict(rawMeta as Record<string, unknown>)
       : null;
   // `ok` reads from `this` rather than a captured local so it tracks any
-  // post-construction mutation of `error` / `markdown`. Previously the
+  // post-construction mutation of `error` / the content fields. Previously the
   // getter closed over the initial values and lied about state if either
   // field was reassigned later.
+  //
+  // It keys on `error` + contentOf, NOT on `markdown`: a non-markdown format
+  // leaves markdown null on a perfectly successful item.
   return {
+    ...contentFromDict(data),
     url,
-    markdown,
     metadata,
     error,
     get ok(): boolean {
-      return this.error === null && this.markdown !== null;
+      return this.error === null && contentOf(this) !== null;
     },
   };
 }
@@ -246,13 +371,12 @@ export function bulkJobFromResponse(body: Record<string, unknown>): BulkJob {
  * Shape mirrors `BulkItem` with an added `depth` field showing how far
  * from the root URL this page sits in the BFS.
  */
-export interface CrawlItem {
+export interface CrawlItem extends Content {
   url: string;
   depth: number;
-  markdown: string | null;
   metadata: ExtractionMeta | null;
   error: string | null;
-  /** True when the page completed successfully (no error + has markdown). */
+  /** True when the page completed successfully (no error + has content). */
   readonly ok: boolean;
 }
 
@@ -260,21 +384,20 @@ export function crawlItemFromDict(data: Record<string, unknown>): CrawlItem {
   const rawMeta = data.metadata;
   const url = typeof data.url === "string" ? data.url : "";
   const depth = typeof data.depth === "number" ? data.depth : 0;
-  const markdown = typeof data.markdown === "string" ? data.markdown : null;
   const error = typeof data.error === "string" ? data.error : null;
   const metadata =
     rawMeta && typeof rawMeta === "object"
       ? extractionMetaFromDict(rawMeta as Record<string, unknown>)
       : null;
-  // See BulkItem.ok — same `this`-based fix.
+  // See BulkItem.ok — same `this`-based getter, same content-not-markdown key.
   return {
+    ...contentFromDict(data),
     url,
     depth,
-    markdown,
     metadata,
     error,
     get ok(): boolean {
-      return this.error === null && this.markdown !== null;
+      return this.error === null && contentOf(this) !== null;
     },
   };
 }
