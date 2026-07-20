@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "lib": ["ES2020", "DOM"],
+    // ES2022 for the type surface only (emit stays at the ES2020 target):
+    // the package supports Node >=18, which has ES2022 array methods such as
+    // Array.prototype.at. Without this, TS 6 rejects `.at()` in the tests.
+    "lib": ["ES2022", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
