@@ -76,6 +76,8 @@ for (const item of job.results) {
 }
 ```
 
+Pass `retry: N` to any of `extract`, `bulk`, or `crawl` to re-attempt timed-out fetches server-side (`target_timeout` only, fresh connection per attempt, default 0). On the synchronous `extract` each timed-out attempt takes 20–30s before the next fires, so aggressive values belong here on `bulk`, where the async workers absorb the wait. `search` doesn't take `retry` — its 15-second per-result deadline can't absorb one.
+
 `getJob` and `waitForJob` are **polymorphic** — they work for both bulk and crawl `jobId`s. The SDK reads a `kind` discriminator from the API response and returns either a `BulkJob` or a `CrawlJob`. Use the `isCrawlJob(job)` type guard (or check `job.kind === "crawl"`) before reading crawl-specific fields like `job.truncated` or `item.depth`.
 
 ```typescript
@@ -108,7 +110,7 @@ if (job.kind === "crawl" && job.truncated) {
 }
 ```
 
-Each successful page consumes one request from your monthly quota — failed pages (timeouts, robots-disallowed, no-content) are not billed. If you run out of quota mid-crawl the job finishes with `truncated: true`, `truncatedReason: "quota_exhausted"`.
+Pass `maxPages: N` to stop the crawl after N successful pages — it can only narrow your plan's page cap, never widen it. Each successful page consumes one request from your monthly quota — failed pages (timeouts, robots-disallowed, no-content) are not billed. If you run out of quota mid-crawl the job finishes with `truncated: true`, `truncatedReason: "quota_exhausted"`.
 
 ## Webhooks
 

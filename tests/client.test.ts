@@ -763,6 +763,7 @@ describe("request body", () => {
       url: "https://example.com",
       render_js: true,
       format: "markdown",
+      retry: 0,
     });
   });
 
@@ -787,7 +788,54 @@ describe("request body", () => {
       depth: 2,
       render_js: false,
       format: "markdown",
+      retry: 0,
     });
+  });
+
+  it("forwards retry on extract/bulk/crawl and maxPages on crawl", async () => {
+    // retry = server-side re-attempts on target_timeout. Search deliberately
+    // has no retry option (15s per-hit deadline), so its body must never
+    // carry one — pinned by the exact-body search test above.
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        markdown: "## Hi",
+        metadata: { url: "https://example.com" },
+        request_id: "id",
+      }),
+    );
+    mock.on("POST", "/bulk", () =>
+      jsonResponse(200, {
+        job_id: "x", status: "queued", total: 1, completed: 0, results: [],
+      }),
+    );
+    mock.on("POST", "/crawl", () =>
+      jsonResponse(200, {
+        job_id: "x", kind: "crawl", status: "queued",
+        total: 0, completed: 0, truncated: false,
+        truncated_reason: null, results: [],
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY });
+    await wm.extract("https://example.com", { retry: 3 });
+    await wm.bulk(["https://example.com"], { retry: 2 });
+    await wm.crawl("https://example.com", { retry: 1, maxPages: 50 });
+
+    expect(mock.calls[0]!.body).toMatchObject({ retry: 3 });
+    expect(mock.calls[1]!.body).toMatchObject({ retry: 2 });
+    expect(mock.calls[2]!.body).toMatchObject({ retry: 1, max_pages: 50 });
+  });
+
+  it("omits max_pages when maxPages is unset so the plan cap stands", async () => {
+    mock.on("POST", "/crawl", () =>
+      jsonResponse(200, {
+        job_id: "x", kind: "crawl", status: "queued",
+        total: 0, completed: 0, truncated: false,
+        truncated_reason: null, results: [],
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY });
+    await wm.crawl("https://example.com");
+    expect(mock.calls[0]!.body).not.toHaveProperty("max_pages");
   });
 });
 

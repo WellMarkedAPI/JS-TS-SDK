@@ -129,6 +129,14 @@ export interface ExtractOptions extends PolicyOverrideOptions {
    * the others stay null. Use `contentOf(result)` to read whichever it is.
    */
   format?: OutputFormat;
+  /**
+   * Server-side re-attempts on `target_timeout`, each on a fresh connection
+   * to the target. Default 0 (one attempt); no upper bound — but each
+   * timed-out attempt takes 20-30s on this synchronous call, so aggressive
+   * values belong on `bulk`. Distinct from the client's own `maxRetries`
+   * (transport retries between you and the API).
+   */
+  retry?: number;
 }
 
 /** Options for `search`. */
@@ -233,6 +241,12 @@ export interface BulkOptions extends JobWebhookOptions, PolicyOverrideOptions {
    * the others stay null. Use `contentOf(result)` to read whichever it is.
    */
   format?: OutputFormat;
+  /**
+   * Per-URL server-side re-attempts on `target_timeout` — see
+   * `ExtractOptions.retry`. The async workers absorb the retry time, so
+   * this is the natural home for aggressive values.
+   */
+  retry?: number;
 }
 
 export interface CrawlOptions extends JobWebhookOptions, PolicyOverrideOptions {
@@ -247,6 +261,13 @@ export interface CrawlOptions extends JobWebhookOptions, PolicyOverrideOptions {
    * the others stay null. Use `contentOf(result)` to read whichever it is.
    */
   format?: OutputFormat;
+  /** Per-page server-side re-attempts on `target_timeout` — see `ExtractOptions.retry`. */
+  retry?: number;
+  /**
+   * Stop the crawl after this many successful pages. Can only narrow your
+   * plan's page cap, never widen it. Must be >= 1.
+   */
+  maxPages?: number;
 }
 
 export interface WaitForJobOptions {
@@ -462,6 +483,7 @@ export class WellMarked {
       url,
       render_js: options.renderJs === true,
       format: options.format ?? "markdown",
+      retry: options.retry ?? 0,
       ...policyOverrides(options),
     });
     return extractResultFromResponse(body as Record<string, unknown>);
@@ -523,6 +545,7 @@ export class WellMarked {
       urls: urlList,
       render_js: options.renderJs === true,
       format: options.format ?? "markdown",
+      retry: options.retry ?? 0,
       ...policyOverrides(options),
     };
     if (options.webhookUrl !== undefined) {
@@ -634,8 +657,12 @@ export class WellMarked {
       depth,
       render_js: options.renderJs === true,
       format: options.format ?? "markdown",
+      retry: options.retry ?? 0,
       ...policyOverrides(options),
     };
+    if (options.maxPages !== undefined) {
+      payload.max_pages = options.maxPages;
+    }
     if (options.webhookUrl !== undefined) {
       payload.webhook_url = options.webhookUrl;
       payload.webhook_include_results = options.webhookIncludeResults === true;
