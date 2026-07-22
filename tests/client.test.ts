@@ -1192,11 +1192,13 @@ describe("search", () => {
     const wm = new WellMarked({ apiKey: API_KEY });
     const res = await wm.search("typescript generics", { numResults: 2 });
 
-    // Request shape reached the server unchanged.
+    // Request shape reached the server unchanged (format defaults to markdown;
+    // policy overrides are omitted entirely when unset).
     expect(mock.calls.at(-1)?.body).toEqual({
       query: "typescript generics",
       num_results: 2,
       render_js: false,
+      format: "markdown",
     });
 
     expect(res.query).toBe("typescript generics");
@@ -1227,6 +1229,37 @@ describe("search", () => {
     const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.search("q")).rejects.toBeInstanceOf(PermissionDeniedError);
     await expect(wm.search("q")).rejects.toMatchObject({ code: "plan_not_supported" });
+  });
+
+  it("carries the full extraction parameter set: format + policy overrides", async () => {
+    mock.on("POST", "/search", () =>
+      jsonResponse(200, {
+        query: "q",
+        results: [{
+          url: "https://a.test/", status: "ok", snippet: "s",
+          chunks: [{ text: "hi", start_token: 0, end_token: 2 }],
+        }],
+        request_id: "33333333-3333-3333-3333-333333333333",
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY });
+    const res = await wm.search("q", {
+      format: "chunks",
+      allowDomains: ["a.test"],
+      respectRobots: "strict",
+    });
+
+    const sent = mock.calls.at(-1)?.body as Record<string, unknown>;
+    expect(sent.format).toBe("chunks");
+    expect(sent.allow_domains).toEqual(["a.test"]);
+    expect(sent.respect_robots).toBe("strict");
+    expect("deny_patterns" in sent).toBe(false);   // unset overrides omitted
+
+    const item = res.results[0]!;
+    expect(item.ok).toBe(true);
+    expect(item.markdown).toBeNull();
+    expect(item.chunks?.[0]).toEqual({ text: "hi", startToken: 0, endToken: 2 });
+    expect(contentOf(item)).toBe(item.chunks);     // format-agnostic accessor
   });
 });
 

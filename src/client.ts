@@ -132,7 +132,7 @@ export interface ExtractOptions extends PolicyOverrideOptions {
 }
 
 /** Options for `search`. */
-export interface SearchOptions {
+export interface SearchOptions extends PolicyOverrideOptions {
   /**
    * How many results to fetch + extract. Clamped to 1..10 server-side (a
    * search is one synchronous call). Default 5.
@@ -140,6 +140,11 @@ export interface SearchOptions {
   numResults?: number;
   /** Render JS-heavy result pages before extracting. */
   renderJs?: boolean;
+  /**
+   * Output format applied to every extracted result — search takes the full
+   * extraction parameter set, same as bulk and crawl. Default "markdown".
+   */
+  format?: OutputFormat;
 }
 
 /** Options for `createKey`. */
@@ -483,6 +488,8 @@ export class WellMarked {
       query,
       num_results: options.numResults ?? 5,
       render_js: options.renderJs === true,
+      format: options.format ?? "markdown",
+      ...policyOverrides(options),
     });
     return searchResultsFromResponse(body as Record<string, unknown>);
   }

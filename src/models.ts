@@ -198,12 +198,11 @@ export function extractResultFromResponse(body: Record<string, unknown>): Extrac
  * else the search provider's; `snippet` is always the provider's result
  * snippet, so a page that failed extraction still carries context.
  */
-export interface SearchResult {
+export interface SearchResult extends Content {
   url: string;
   status: "ok" | "error";
   title: string | null;
   snippet: string | null;
-  markdown: string | null;
   error: string | null;
   /** True when `status === "ok"`. */
   readonly ok: boolean;
@@ -214,14 +213,13 @@ export function searchResultFromDict(data: Record<string, unknown>): SearchResul
   const status: "ok" | "error" = data.status === "ok" ? "ok" : "error";
   const title = typeof data.title === "string" ? data.title : null;
   const snippet = typeof data.snippet === "string" ? data.snippet : null;
-  const markdown = typeof data.markdown === "string" ? data.markdown : null;
   const error = typeof data.error === "string" ? data.error : null;
   return {
+    ...contentFromDict(data),
     url,
     status,
     title,
     snippet,
-    markdown,
     error,
     get ok(): boolean {
       return this.status === "ok";
