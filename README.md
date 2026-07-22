@@ -298,14 +298,13 @@ All inherit from `WellMarkedError`.
 ```typescript
 new WellMarked({
   apiKey: "wm_...",                         // or set WELLMARKED_API_KEY
-  baseUrl: "https://api.wellmarked.io",
   timeoutMs: 30_000,                        // per request, default 30s
-  fetch: customFetch,                       // optional: bring your own fetch
+  maxRetries: 2,                            // retries for safely replayable requests
   headers: { "X-Trace-Id": "..." },         // optional: extra headers on every request
 });
 ```
 
-Passing your own `fetch` is useful for custom proxies, polyfills (e.g. `undici` with a custom dispatcher), or test mocking. Any function with the standard `fetch` signature works.
+The client always talks to `https://api.wellmarked.io` using the global `fetch` (Node 18+ or any browser).
 
 ## TypeScript
 

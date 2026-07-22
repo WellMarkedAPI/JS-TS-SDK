@@ -25,12 +25,17 @@ const BASE_URL = "https://api.wellmarked.io";
 
 let mock: MockFetch;
 
+// The client has no `fetch` option (and no `baseUrl`) — it always uses the
+// global fetch against https://api.wellmarked.io. Tests therefore stub the
+// GLOBAL, exactly as the runtime resolves it (lazily, at call time).
 beforeEach(() => {
   mock = new MockFetch();
+  vi.stubGlobal("fetch", mock.fetch);
 });
 
 afterEach(() => {
   mock.reset();
+  vi.unstubAllGlobals();
 });
 
 // ── Extract ────────────────────────────────────────────────────────────────
@@ -51,7 +56,7 @@ describe("extract", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com");
 
     expect(result.markdown).toBe("## Hello");
@@ -74,7 +79,7 @@ describe("extract", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://example.com")).rejects.toMatchObject({
       code: "rate_limit_exceeded",
       retryAfter: 1209600,
@@ -104,7 +109,7 @@ describe("extract", () => {
       ),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://example.com")).rejects.toMatchObject({
       code: "rate_limit_too_fast",
       retryAfter: 1,
@@ -120,7 +125,7 @@ describe("extract", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://example.com")).rejects.toBeInstanceOf(AuthenticationError);
   });
 
@@ -131,7 +136,7 @@ describe("extract", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     let caught: unknown;
     try {
       await wm.extract("https://example.com");
@@ -150,7 +155,7 @@ describe("extract", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com");
     expect(new Set(Object.keys(result))).toEqual(
       new Set([
@@ -168,6 +173,23 @@ describe("extract", () => {
     expect(result.markdown).toBe("x");
     expect(result.blocks).toBeNull();
   });
+
+  it("has no baseUrl escape hatch — a smuggled option is ignored", async () => {
+    // WellMarked only serves api.wellmarked.io. There is deliberately no
+    // baseUrl (or fetch) option; TypeScript rejects them at compile time, and
+    // a caller who force-casts past the types still ends up at the real API.
+    mock.on("POST", "/extract", () =>
+      jsonResponse(200, {
+        markdown: "x",
+        metadata: { url: "https://example.com" },
+        request_id: "id",
+      }),
+    );
+    const smuggled = { apiKey: API_KEY, baseUrl: "http://localhost:8000" };
+    const wm = new WellMarked(smuggled as ConstructorParameters<typeof WellMarked>[0]);
+    await wm.extract("https://example.com");
+    expect(mock.calls.at(-1)!.url.startsWith(BASE_URL)).toBe(true);
+  });
 });
 
 // ── Bulk ───────────────────────────────────────────────────────────────────
@@ -184,7 +206,7 @@ describe("bulk", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.bulk(["https://a.example", "https://b.example"]);
 
     expect(job.status).toBe("queued");
@@ -199,12 +221,12 @@ describe("bulk", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.bulk(["https://a.example"])).rejects.toBeInstanceOf(PermissionDeniedError);
   });
 
   it("rejects empty URL lists client-side with a clear error", async () => {
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.bulk([])).rejects.toThrow(/at least one URL/);
     // No network call should have happened.
     expect(mock.calls.length).toBe(0);
@@ -225,7 +247,7 @@ describe("getUsage", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const usage = await wm.getUsage();
 
     expect(usage.plan).toBe("pro");
@@ -257,7 +279,7 @@ describe("rotateKey", () => {
       }),
     );
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const rotated = await wm.rotateKey();
     // Subsequent requests should carry the new bearer token.
     await wm.getUsage();
@@ -276,7 +298,7 @@ describe("api key resolution", () => {
     const original = process.env.WELLMARKED_API_KEY;
     delete process.env.WELLMARKED_API_KEY;
     try {
-      expect(() => new WellMarked({ fetch: mock.fetch })).toThrow(/No API key/);
+      expect(() => new WellMarked()).toThrow(/No API key/);
     } finally {
       if (original !== undefined) process.env.WELLMARKED_API_KEY = original;
     }
@@ -286,7 +308,7 @@ describe("api key resolution", () => {
     const original = process.env.WELLMARKED_API_KEY;
     process.env.WELLMARKED_API_KEY = API_KEY;
     try {
-      const wm = new WellMarked({ fetch: mock.fetch });
+      const wm = new WellMarked();
       expect(wm._getApiKey()).toBe(API_KEY);
     } finally {
       if (original === undefined) delete process.env.WELLMARKED_API_KEY;
@@ -312,7 +334,7 @@ describe("ExtractionMeta", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com");
     const meta = result.metadata;
     expect(meta.url).toBe("https://example.com");
@@ -338,7 +360,7 @@ describe("ExtractionMeta", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com");
     expect(result.metadata.title).toBeNull();
     expect(result.metadata.author).toBeNull();
@@ -352,7 +374,7 @@ describe("ExtractionMeta", () => {
 describe("contract violations", () => {
   it("2xx with empty body raises a WellMarkedError", async () => {
     mock.on("POST", "/extract", () => emptyResponse(200));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://example.com")).rejects.toThrow(/no JSON body/);
     await expect(wm.extract("https://example.com")).rejects.toBeInstanceOf(WellMarkedError);
   });
@@ -365,7 +387,8 @@ describe("transport errors", () => {
     const failingFetch: typeof fetch = async () => {
       throw new TypeError("fetch failed: ECONNREFUSED");
     };
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    vi.stubGlobal("fetch", failingFetch);
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://example.com")).rejects.toBeInstanceOf(APIConnectionError);
   });
 });
@@ -386,7 +409,7 @@ describe("crawl", () => {
         results: [],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.crawl("https://example.com", { depth: 2 });
     expect(job.kind).toBe("crawl");
     expect(job.status).toBe("queued");
@@ -401,7 +424,7 @@ describe("crawl", () => {
         error: { code: "plan_not_supported", message: "Upgrade." },
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.crawl("https://example.com", { depth: 1 })).rejects.toBeInstanceOf(
       PermissionDeniedError,
     );
@@ -413,7 +436,7 @@ describe("crawl", () => {
         error: { code: "crawl_depth_exceeded", message: "Pro caps at 5." },
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     let caught: unknown;
     try {
       await wm.crawl("https://example.com", { depth: 10 });
@@ -425,7 +448,7 @@ describe("crawl", () => {
   });
 
   it("rejects negative depth client-side", async () => {
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.crawl("https://example.com", { depth: -1 })).rejects.toThrow(
       /depth must be >= 0/,
     );
@@ -455,7 +478,7 @@ describe("polymorphic getJob", () => {
         ],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.getJob(jobId);
     expect(job.kind).toBe("bulk");
     expect(job.done).toBe(true);
@@ -494,7 +517,7 @@ describe("polymorphic getJob", () => {
         ],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.getJob(jobId);
     expect(isCrawlJob(job)).toBe(true);
     if (isCrawlJob(job)) {
@@ -544,7 +567,7 @@ describe("waitForJob", () => {
         }),
     ]);
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.waitForJob(jobId, { pollIntervalMs: 0, timeoutMs: 5000 });
     expect(job.done).toBe(true);
     expect(job.completed).toBe(2);
@@ -601,7 +624,7 @@ describe("waitForJob", () => {
         }),
     ]);
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.waitForJob(jobId, { pollIntervalMs: 0, timeoutMs: 5000 });
     expect(isCrawlJob(job)).toBe(true);
     expect(job.done).toBe(true);
@@ -624,7 +647,7 @@ describe("waitForJob", () => {
         results: [],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     // Tight timeout — first iteration will check the deadline and bail.
     await expect(
       wm.waitForJob(jobId, { pollIntervalMs: 0, timeoutMs: 1 }),
@@ -646,7 +669,6 @@ describe("custom headers", () => {
 
     const wm = new WellMarked({
       apiKey: API_KEY,
-      fetch: mock.fetch,
       headers: { "X-Trace-Id": "abc123", "X-Tenant": "acme" },
     });
     await wm.extract("https://example.com");
@@ -667,7 +689,6 @@ describe("custom headers", () => {
     );
     const wm = new WellMarked({
       apiKey: API_KEY,
-      fetch: mock.fetch,
       headers: {
         Authorization: "Bearer wm_attacker",
         "X-Custom": "ok",
@@ -687,7 +708,7 @@ describe("custom headers", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.extract("https://example.com"); // no custom header yet
     wm.setHeader("X-Run-Id", "run-99");
@@ -716,7 +737,8 @@ describe("request timeout", () => {
         }
       });
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: slowFetch, timeoutMs: 50 });
+    vi.stubGlobal("fetch", slowFetch);
+    const wm = new WellMarked({ apiKey: API_KEY, timeoutMs: 50 });
     await expect(wm.extract("https://example.com")).rejects.toBeInstanceOf(
       APIConnectionError,
     );
@@ -734,7 +756,7 @@ describe("request body", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.extract("https://example.com", { renderJs: true });
     const call = mock.calls[0]!;
     expect(call.body).toEqual({
@@ -757,7 +779,7 @@ describe("request body", () => {
         results: [],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.crawl("https://example.com", { depth: 2 });
     const call = mock.calls[0]!;
     expect(call.body).toEqual({
@@ -785,7 +807,7 @@ const QUEUED_JOB = {
 describe("idempotency", () => {
   it("bulk() sends a generated Idempotency-Key when none is given", async () => {
     mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.bulk(["https://a.example"]);
 
@@ -794,7 +816,7 @@ describe("idempotency", () => {
 
   it("bulk() honours an explicit key", async () => {
     mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.bulk(["https://a.example"], { idempotencyKey: "caller-chosen" });
 
@@ -805,7 +827,7 @@ describe("idempotency", () => {
     // Two submissions are two operations — sharing a key would make the
     // second replay the first one's job.
     mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.bulk(["https://a.example"]);
     await wm.bulk(["https://b.example"]);
@@ -819,7 +841,7 @@ describe("idempotency", () => {
     mock.on("POST", "/crawl", () =>
       jsonResponse(200, { ...QUEUED_JOB, kind: "crawl", total: 0 }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.crawl("https://a.example");
 
@@ -831,7 +853,7 @@ describe("idempotency", () => {
     // The per-request key must win, or every later bulk() would replay the
     // first job.
     mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     wm.setHeader("Idempotency-Key", "pinned-forever");
 
     await wm.bulk(["https://a.example"]);
@@ -845,7 +867,7 @@ describe("idempotency", () => {
 
   it("per-request headers still cannot override Authorization", async () => {
     mock.on("POST", "/bulk", () => jsonResponse(200, QUEUED_JOB));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
 
     await wm.bulk(["https://a.example"], { idempotencyKey: "k1" });
 
@@ -870,7 +892,8 @@ describe("retry", () => {
       return jsonResponse(200, QUEUED_JOB);
     }) as typeof fetch;
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    vi.stubGlobal("fetch", failingFetch);
+    const wm = new WellMarked({ apiKey: API_KEY });
     const job = await wm.bulk(["https://a.example"]);
 
     expect(attempts).toBe(2);
@@ -889,7 +912,8 @@ describe("retry", () => {
       throw new TypeError("network down");
     }) as typeof fetch;
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    vi.stubGlobal("fetch", failingFetch);
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://a.example")).rejects.toBeInstanceOf(APIConnectionError);
     expect(attempts).toBe(1);
   });
@@ -901,7 +925,8 @@ describe("retry", () => {
       if (attempts === 1) return jsonResponse(503, { error: { code: "x", message: "down" } });
       return jsonResponse(200, QUEUED_JOB);
     }) as typeof fetch;
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: flaky });
+    vi.stubGlobal("fetch", flaky);
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.bulk(["https://a.example"]);
     expect(attempts).toBe(2);
 
@@ -912,7 +937,8 @@ describe("retry", () => {
         error: { code: "bulk_cap_exceeded", message: "too many" },
       });
     }) as typeof fetch;
-    const wm2 = new WellMarked({ apiKey: API_KEY, fetch: deterministic });
+    vi.stubGlobal("fetch", deterministic);
+    const wm2 = new WellMarked({ apiKey: API_KEY });
     await expect(wm2.bulk(["https://a.example"])).rejects.toBeInstanceOf(
       UnprocessableEntityError,
     );
@@ -927,7 +953,8 @@ describe("retry", () => {
       throw new TypeError("network down");
     }) as typeof fetch;
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: alwaysDown, maxRetries: 1 });
+    vi.stubGlobal("fetch", alwaysDown);
+    const wm = new WellMarked({ apiKey: API_KEY, maxRetries: 1 });
     await expect(wm.bulk(["https://a.example"])).rejects.toBeInstanceOf(APIConnectionError);
     expect(attempts).toBe(2);
   });
@@ -939,7 +966,8 @@ describe("retry", () => {
       throw new TypeError("network down");
     }) as typeof fetch;
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: alwaysDown, maxRetries: 0 });
+    vi.stubGlobal("fetch", alwaysDown);
+    const wm = new WellMarked({ apiKey: API_KEY, maxRetries: 0 });
     await expect(wm.bulk(["https://a.example"])).rejects.toBeInstanceOf(APIConnectionError);
     expect(attempts).toBe(1);
   });
@@ -955,7 +983,8 @@ describe("retry", () => {
       throw new TypeError("network down");
     }) as typeof fetch;
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: failingFetch });
+    vi.stubGlobal("fetch", failingFetch);
+    const wm = new WellMarked({ apiKey: API_KEY });
     wm.setHeader("Idempotency-Key", "smuggled");
 
     await expect(wm.extract("https://a.example")).rejects.toBeInstanceOf(APIConnectionError);
@@ -969,9 +998,9 @@ describe("retry", () => {
       throw new TypeError("network down");
     }) as typeof fetch;
 
+    vi.stubGlobal("fetch", failingFetch);
     const wm = new WellMarked({
       apiKey: API_KEY,
-      fetch: failingFetch,
       headers: { "Idempotency-Key": "smuggled" },
     });
 
@@ -991,7 +1020,7 @@ describe("policy overrides", () => {
         request_id: "r1",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.extract("https://a.example", {
       allowDomains: ["a.example"],
       denyPatterns: ["*/admin/*"],
@@ -1011,7 +1040,7 @@ describe("policy overrides", () => {
         request_id: "r1",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.extract("https://a.example");
     const sent = mock.calls.at(-1)!.body as Record<string, unknown>;
     expect("allow_domains" in sent).toBe(false);
@@ -1025,7 +1054,7 @@ describe("policy overrides", () => {
         error: { code: "domain_denied", message: "denied", retry: false },
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.extract("https://blocked.example")).rejects.toMatchObject({
       code: "domain_denied",
     });
@@ -1046,7 +1075,7 @@ describe("key management", () => {
         created_at: "2026-07-17T00:00:00Z",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const key = await wm.createKey(["extract"], { name: "ci" });
     expect(key.apiKey.startsWith("wm_")).toBe(true);
     expect(key.scopes).toEqual(["extract"]);
@@ -1062,7 +1091,7 @@ describe("key management", () => {
         ],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const keys = await wm.listKeys();
     expect(keys.map((k) => k.id)).toEqual(["k1", "k2"]);
     expect(keys[0]!.active).toBe(true);
@@ -1073,7 +1102,7 @@ describe("key management", () => {
     mock.on("DELETE", "/keys/k2", () =>
       jsonResponse(200, { id: "k2", revoked_at: "2026-07-03T00:00:00Z" }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const revoked = await wm.revokeKey("k2");
     expect(revoked.id).toBe("k2");
     expect(mock.calls.at(-1)!.method).toBe("DELETE");
@@ -1102,7 +1131,7 @@ describe("getLogs", () => {
         has_more: true,
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const page = await wm.getLogs({ limit: 50, offset: 0 });
     expect(page.hasMore).toBe(true);
     expect(page.logs[0]!.policyDecision).toBe("domain_denied");
@@ -1124,10 +1153,7 @@ describe("register (static)", () => {
         scopes: ["extract"],
       }),
     );
-    const account = await WellMarked.register("agent@example.com", {
-      baseUrl: BASE_URL,
-      fetch: mock.fetch,
-    });
+    const account = await WellMarked.register("agent@example.com");
     expect(account.apiKey.startsWith("wm_")).toBe(true);
     expect(account.plan).toBe("free");
     expect(account.scopes).toEqual(["extract"]);
@@ -1143,7 +1169,7 @@ describe("register (static)", () => {
       }),
     );
     await expect(
-      WellMarked.register("agent@example.com", { baseUrl: BASE_URL, fetch: mock.fetch }),
+      WellMarked.register("agent@example.com"),
     ).rejects.toMatchObject({ code: "register_rate_limited" });
   });
 });
@@ -1163,7 +1189,7 @@ describe("search", () => {
   it("returns parsed results and sends the expected payload", async () => {
     mock.on("POST", "/search", () => jsonResponse(200, SEARCH_BODY));
 
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const res = await wm.search("typescript generics", { numResults: 2 });
 
     // Request shape reached the server unchanged.
@@ -1189,7 +1215,7 @@ describe("search", () => {
 
   it("defaults num_results to 5 when omitted", async () => {
     mock.on("POST", "/search", () => jsonResponse(200, { ...SEARCH_BODY, results: [] }));
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.search("q");
     expect((mock.calls.at(-1)?.body as { num_results: number }).num_results).toBe(5);
   });
@@ -1198,7 +1224,7 @@ describe("search", () => {
     mock.on("POST", "/search", () =>
       jsonResponse(403, { error: { code: "plan_not_supported", message: "Pro+ only." } }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await expect(wm.search("q")).rejects.toBeInstanceOf(PermissionDeniedError);
     await expect(wm.search("q")).rejects.toMatchObject({ code: "plan_not_supported" });
   });
@@ -1228,7 +1254,7 @@ describe("output formats", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com", { format: "json" });
 
     expect((mock.calls[0]!.body as Record<string, unknown>).format).toBe("json");
@@ -1252,7 +1278,7 @@ describe("output formats", () => {
         request_id: "id",
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     const result = await wm.extract("https://example.com", { format: "chunks" });
 
     expect(result.chunks?.map((c) => c.startToken)).toEqual([0, 500]);
@@ -1283,7 +1309,7 @@ describe("output formats", () => {
         results: [],
       }),
     );
-    const wm = new WellMarked({ apiKey: API_KEY, fetch: mock.fetch });
+    const wm = new WellMarked({ apiKey: API_KEY });
     await wm.bulk(["https://a.test"], { format: "links" });
     await wm.crawl("https://b.test", { format: "html" });
 

@@ -67,8 +67,6 @@ export interface WellMarkedOptions {
    * `WELLMARKED_API_KEY` environment variable (Node.js only).
    */
   apiKey?: string;
-  /** API base URL. Override for testing. */
-  baseUrl?: string;
   /**
    * Timeout for a single attempt, milliseconds. Defaults to 30000 (30s).
    *
@@ -92,11 +90,6 @@ export interface WellMarkedOptions {
    * job rather than enqueuing a second one.
    */
   maxRetries?: number;
-  /**
-   * Bring your own `fetch`. Defaults to the global `fetch`. Useful for
-   * polyfills, custom agents/proxies, or test mocking.
-   */
-  fetch?: typeof fetch;
   /**
    * Extra headers sent on every request — useful for adding an internal
    * correlation id, a custom user agent suffix, etc.
@@ -157,12 +150,8 @@ export interface CreateKeyOptions {
 
 /** Options for the static `WellMarked.register`. */
 export interface RegisterOptions {
-  /** API base URL. Override for testing. */
-  baseUrl?: string;
   /** Timeout for the single request, milliseconds. Defaults to 30000. */
   timeoutMs?: number;
-  /** Bring your own `fetch`. Defaults to the global `fetch`. */
-  fetch?: typeof fetch;
 }
 
 /** Options for `getLogs`. */
@@ -335,23 +324,13 @@ export class WellMarked {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
-  private readonly fetchImpl: typeof fetch;
   private readonly extraHeaders: Record<string, string>;
 
   constructor(options: WellMarkedOptions = {}) {
     this.apiKey = resolveApiKey(options.apiKey);
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = DEFAULT_BASE_URL;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
-    const f = options.fetch ?? (typeof fetch !== "undefined" ? fetch : undefined);
-    if (!f) {
-      throw new Error(
-        "No fetch implementation available. Pass `fetch:` to the client " +
-          "(undici, node-fetch, etc.) or upgrade to Node 18+.",
-      );
-    }
-    // Bind so `this` isn't lost when calling globalThis.fetch.
-    this.fetchImpl = f.bind(globalThis) as typeof fetch;
     this.extraHeaders = {};
     if (options.headers) {
       for (const [k, v] of Object.entries(options.headers)) {
@@ -359,6 +338,23 @@ export class WellMarked {
         this.extraHeaders[k] = v;
       }
     }
+  }
+
+  /**
+   * The global `fetch`, resolved at call time (not captured at construction).
+   * Node 18+ and every browser provide it. Resolving lazily keeps the
+   * constructor infallible in odd environments and lets test runners stub
+   * `globalThis.fetch` whenever they like.
+   */
+  private get fetchImpl(): typeof fetch {
+    const f = typeof fetch !== "undefined" ? fetch : undefined;
+    if (!f) {
+      throw new Error(
+        "No global fetch available. Node 18+ (or a browser) is required.",
+      );
+    }
+    // Bind so `this` isn't lost when calling globalThis.fetch.
+    return f.bind(globalThis) as typeof fetch;
   }
 
   // ── Self-registration ───────────────────────────────────────────────────────
@@ -385,13 +381,12 @@ export class WellMarked {
     email: string,
     options: RegisterOptions = {},
   ): Promise<RegisteredAccount> {
-    const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+    const baseUrl = DEFAULT_BASE_URL;
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const f = options.fetch ?? (typeof fetch !== "undefined" ? fetch : undefined);
+    const f = typeof fetch !== "undefined" ? fetch : undefined;
     if (!f) {
       throw new Error(
-        "No fetch implementation available. Pass `fetch:` to register() " +
-          "(undici, node-fetch, etc.) or upgrade to Node 18+.",
+        "No global fetch available. Node 18+ (or a browser) is required.",
       );
     }
     const fetchImpl = f.bind(globalThis) as typeof fetch;
