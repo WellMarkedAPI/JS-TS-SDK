@@ -131,10 +131,11 @@ export interface ExtractOptions extends PolicyOverrideOptions {
   format?: OutputFormat;
   /**
    * Server-side re-attempts on `target_timeout`, each on a fresh connection
-   * to the target. Default 0 (one attempt); no upper bound — but each
-   * timed-out attempt takes 20-30s on this synchronous call, so aggressive
-   * values belong on `bulk`. Distinct from the client's own `maxRetries`
-   * (transport retries between you and the API).
+   * to the target. Default 0 (one attempt); no upper bound on the value,
+   * though the server stops re-attempting once a job's 6-hour lifetime is
+   * spent. Each timed-out attempt takes 20-30s on this synchronous call, so
+   * aggressive values belong on `bulk`. Distinct from the client's own
+   * `maxRetries` (transport retries between you and the API).
    */
   retry?: number;
 }
