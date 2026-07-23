@@ -76,6 +76,8 @@ for (const item of job.results) {
 }
 ```
 
+Pass `retry: N` to any of `extract`, `bulk`, or `crawl` to re-attempt timed-out fetches server-side (`target_timeout` only, fresh connection per attempt, default 0). On the synchronous `extract` each timed-out attempt takes 20–30s before the next fires, so aggressive values belong here on `bulk`, where the async workers absorb the wait. `search` doesn't take `retry` — its 15-second per-result deadline can't absorb one.
+
 `getJob` and `waitForJob` are **polymorphic** — they work for both bulk and crawl `jobId`s. The SDK reads a `kind` discriminator from the API response and returns either a `BulkJob` or a `CrawlJob`. Use the `isCrawlJob(job)` type guard (or check `job.kind === "crawl"`) before reading crawl-specific fields like `job.truncated` or `item.depth`.
 
 ```typescript
@@ -108,7 +110,7 @@ if (job.kind === "crawl" && job.truncated) {
 }
 ```
 
-Each successful page consumes one request from your monthly quota — failed pages (timeouts, robots-disallowed, no-content) are not billed. If you run out of quota mid-crawl the job finishes with `truncated: true`, `truncatedReason: "quota_exhausted"`.
+Pass `maxPages: N` to stop the crawl after N successful pages — it can only narrow your plan's page cap, never widen it. Each successful page consumes one request from your monthly quota — failed pages (timeouts, robots-disallowed, no-content) are not billed. If you run out of quota mid-crawl the job finishes with `truncated: true`, `truncatedReason: "quota_exhausted"`.
 
 ## Webhooks
 
@@ -273,7 +275,7 @@ try {
   if (err instanceof RateLimitError) {
     console.log(`Quota hit. Resets in ${err.retryAfter}s.`);
   } else if (err instanceof UnprocessableEntityError) {
-    // err.code is one of: no_content, target_timeout, js_rendering_disabled, ...
+    // err.code is one of: no_content, target_timeout, ...
     console.log(`Extraction failed (${err.code}): ${err.message}`);
   } else {
     throw err;
@@ -286,7 +288,7 @@ try {
 | `AuthenticationError`      | 401  | `missing_api_key`, `invalid_api_key`                                                                 |
 | `PermissionDeniedError`    | 403  | `account_inactive`, `plan_not_supported`, `forbidden`                                                |
 | `NotFoundError`            | 404  | `job_not_found`                                                                                      |
-| `UnprocessableEntityError` | 422  | `no_content`, `target_timeout`, `js_rendering_disabled`, `bulk_cap_exceeded`, `crawl_depth_exceeded` |
+| `UnprocessableEntityError` | 422  | `no_content`, `target_timeout`, `bulk_cap_exceeded`, `crawl_depth_exceeded`                          |
 | `RateLimitError`           | 429  | `rate_limit_too_fast` *(per-second cap; `retryAfterMs` carries the sub-second back-off)* · `rate_limit_exceeded` *(monthly quota; `retryAfter` in seconds)* |
 | `InternalServerError`      | 5xx  | —                                                                                                    |
 | `APIConnectionError`       | —    | DNS / TCP / TLS / timeout failures, raised before any HTTP round-trip                                |
@@ -298,14 +300,13 @@ All inherit from `WellMarkedError`.
 ```typescript
 new WellMarked({
   apiKey: "wm_...",                         // or set WELLMARKED_API_KEY
-  baseUrl: "https://api.wellmarked.io",
   timeoutMs: 30_000,                        // per request, default 30s
-  fetch: customFetch,                       // optional: bring your own fetch
+  maxRetries: 2,                            // retries for safely replayable requests
   headers: { "X-Trace-Id": "..." },         // optional: extra headers on every request
 });
 ```
 
-Passing your own `fetch` is useful for custom proxies, polyfills (e.g. `undici` with a custom dispatcher), or test mocking. Any function with the standard `fetch` signature works.
+The client always talks to `https://api.wellmarked.io` using the global `fetch` (Node 18+ or any browser).
 
 ## TypeScript
 

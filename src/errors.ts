@@ -102,7 +102,6 @@ export class NotFoundError extends APIStatusError {
  * Common `code` values:
  *   - `no_content`            — could not identify main content on the page
  *   - `target_timeout`        — the target URL timed out
- *   - `js_rendering_disabled` — `renderJs=true` but the server has it off
  *   - `bulk_cap_exceeded`     — more URLs than the plan allows per request
  *   - `crawl_depth_exceeded`  — requested depth above the plan cap
  */

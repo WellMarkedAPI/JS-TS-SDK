@@ -1,6 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    // The CJS build passes --moduleResolution node (node10), which TS 6
+    // deprecates and TS 7 will drop. Silence it for now; migrating the CJS
+    // output to node16 resolution is a separate, behaviour-affecting change.
+    "ignoreDeprecations": "6.0",
     "rootDir": "src",
     "declaration": true,
     "declarationMap": false,
