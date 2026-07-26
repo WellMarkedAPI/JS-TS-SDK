@@ -461,7 +461,7 @@ describe("crawl", () => {
 describe("polymorphic getJob", () => {
   it("returns BulkJob when kind=bulk (single round-trip)", async () => {
     const jobId = "1c4f9a02-0000-0000-0000-000000000000";
-    mock.on("GET", `/bulk/${jobId}`, () =>
+    mock.on("GET", `/jobs/${jobId}`, () =>
       jsonResponse(200, {
         job_id: jobId,
         kind: "bulk",
@@ -485,19 +485,12 @@ describe("polymorphic getJob", () => {
     expect(mock.calls.length).toBe(1);
   });
 
-  it("redispatches to /crawl when kind=crawl", async () => {
+  it("returns a full CrawlJob when kind=crawl, still in ONE call", async () => {
+    // This is the regression that matters. getJob used to hit /bulk/{id} just
+    // to read `kind`, then re-fetch /crawl/{id} for truncated + depth — two
+    // round trips, and a 403 for any key that held `crawl` but not `bulk`.
     const jobId = "9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    mock.on("GET", `/bulk/${jobId}`, () =>
-      jsonResponse(200, {
-        job_id: jobId,
-        kind: "crawl",
-        status: "done",
-        total: 1,
-        completed: 1,
-        results: [],
-      }),
-    );
-    mock.on("GET", `/crawl/${jobId}`, () =>
+    mock.on("GET", `/jobs/${jobId}`, () =>
       jsonResponse(200, {
         job_id: jobId,
         kind: "crawl",
@@ -525,6 +518,27 @@ describe("polymorphic getJob", () => {
       expect(job.truncatedReason).toBe("page_cap_reached");
       expect(job.results[0]!.depth).toBe(0);
     }
+    expect(mock.calls.length).toBe(1);
+  });
+
+  it("never touches the scope-gated /bulk or /crawl poll routes", async () => {
+    // Those two require the `bulk` / `crawl` scope respectively; /jobs/{id}
+    // requires neither. If a future edit reintroduces either path here, a
+    // narrowly-scoped key starts 403ing on its own job again.
+    const jobId = "9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    mock.on("GET", `/jobs/${jobId}`, () =>
+      jsonResponse(200, {
+        job_id: jobId,
+        kind: "crawl",
+        status: "done",
+        total: 0,
+        completed: 0,
+        results: [],
+      }),
+    );
+    const wm = new WellMarked({ apiKey: API_KEY });
+    await wm.getJob(jobId);
+    expect(mock.calls.map((c) => c.path)).toEqual([`/jobs/${jobId}`]);
   });
 });
 
@@ -533,7 +547,7 @@ describe("polymorphic getJob", () => {
 describe("waitForJob", () => {
   it("polls bulk jobs until done", async () => {
     const jobId = "1c4f9a02-0000-0000-0000-000000000000";
-    mock.onSequence("GET", `/bulk/${jobId}`, [
+    mock.onSequence("GET", `/jobs/${jobId}`, [
       () =>
         jsonResponse(200, {
           job_id: jobId,
@@ -576,21 +590,10 @@ describe("waitForJob", () => {
     expect(job.results[1]!.error).toBe("target_timeout");
   });
 
-  it("uses the typed endpoint after first call for crawl jobs", async () => {
+  it("polls crawl jobs on /jobs with no dispatch round-trip", async () => {
     const jobId = "9aaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-    // Discovery via /bulk says crawl.
-    mock.on("GET", `/bulk/${jobId}`, () =>
-      jsonResponse(200, {
-        job_id: jobId,
-        kind: "crawl",
-        status: "processing",
-        total: 2,
-        completed: 1,
-        results: [],
-      }),
-    );
-    mock.onSequence("GET", `/crawl/${jobId}`, [
-      // First /crawl: discovery refetch — still processing.
+    mock.onSequence("GET", `/jobs/${jobId}`, [
+      // First call — still processing.
       () =>
         jsonResponse(200, {
           job_id: jobId,
@@ -602,7 +605,7 @@ describe("waitForJob", () => {
           truncated_reason: null,
           results: [],
         }),
-      // Second /crawl: actual poll — done.
+      // Second call — done.
       () =>
         jsonResponse(200, {
           job_id: jobId,
@@ -628,16 +631,17 @@ describe("waitForJob", () => {
     const job = await wm.waitForJob(jobId, { pollIntervalMs: 0, timeoutMs: 5000 });
     expect(isCrawlJob(job)).toBe(true);
     expect(job.done).toBe(true);
-    // /bulk called once (discovery), /crawl called twice (discovery + poll).
-    const bulkCalls = mock.calls.filter((c) => c.path === `/bulk/${jobId}`).length;
-    const crawlCalls = mock.calls.filter((c) => c.path === `/crawl/${jobId}`).length;
-    expect(bulkCalls).toBe(1);
-    expect(crawlCalls).toBe(2);
+    // Two polls, two calls — the old path spent three for the same result
+    // (one /bulk discovery + a /crawl refetch + the real poll).
+    expect(mock.calls.map((c) => c.path)).toEqual([
+      `/jobs/${jobId}`,
+      `/jobs/${jobId}`,
+    ]);
   });
 
   it("throws when the job doesn't finish before timeout", async () => {
     const jobId = "1c4f9a02-0000-0000-0000-000000000000";
-    mock.on("GET", `/bulk/${jobId}`, () =>
+    mock.on("GET", `/jobs/${jobId}`, () =>
       jsonResponse(200, {
         job_id: jobId,
         kind: "bulk",
