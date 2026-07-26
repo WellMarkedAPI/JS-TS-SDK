@@ -123,6 +123,8 @@ for (const item of job.results) {
 
 `getJob` and `waitForJob` are **polymorphic** — they work for both bulk and crawl `jobId`s. The SDK reads a `kind` discriminator from the API response and returns either a `BulkJob` or a `CrawlJob`. Use the `isCrawlJob(job)` type guard (or check `job.kind === "crawl"`) before reading crawl-specific fields like `job.truncated` or `item.depth`.
 
+Both resolve a job in a **single request** to `GET /jobs/{id}`, which answers for either kind and requires neither the `bulk` nor the `crawl` scope. Earlier versions polled `/bulk/{id}` first just to read `kind`, then re-fetched `/crawl/{id}` for the crawl-only fields — so a key scoped to `crawl` alone got a `403` and could not poll its own job. Requires an API deployed on or after this endpoint's release.
+
 ```typescript
 import { isCrawlJob } from "wellmarked";
 

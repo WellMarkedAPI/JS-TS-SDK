@@ -559,14 +559,27 @@ export class WellMarked {
     return bulkJobFromResponse(body as Record<string, unknown>);
   }
 
+  /** Build the right job type from a `/jobs/{id}` body, using `kind`. */
+  private static jobFromBody(body: Record<string, unknown>): BulkJob | CrawlJob {
+    return body.kind === "crawl"
+      ? crawlJobFromResponse(body)
+      : bulkJobFromResponse(body);
+  }
+
   /**
-   * Polymorphic job lookup — works for both bulk and crawl jobs.
+   * Polymorphic job lookup — works for both bulk and crawl jobs, in ONE call.
    *
-   * Calls `GET /bulk/{jobId}` first, then inspects the response's `kind`
-   * discriminator field. If the job is actually a crawl, a second request
-   * to `GET /crawl/{jobId}` fetches the full crawl shape (with per-item
-   * depth and the truncated flags). Returns `BulkJob` or `CrawlJob`
-   * accordingly.
+   * `GET /jobs/{jobId}` resolves either kind and returns the superset shape;
+   * the `kind` discriminator says which you got. Returns `BulkJob` or
+   * `CrawlJob` accordingly.
+   *
+   * This used to call `GET /bulk/{jobId}` purely to read `kind`, then re-fetch
+   * `GET /crawl/{jobId}` for the fields the bulk shape omits (`truncated`,
+   * `truncated_reason`, per-item `depth`). That cost two round trips per crawl
+   * poll — issued back-to-back, fast enough to trip the API's own per-plan
+   * min-spacing limiter — and, because `/bulk/*` requires the `bulk` scope, it
+   * meant a key scoped to `crawl` alone got a 403 on the discovery call and
+   * could never poll its own job. `/jobs/{id}` requires neither scope.
    *
    * Use `isCrawlJob(job)` (or check `job.kind === "crawl"`) to branch on
    * crawl-specific behavior. The shared interface (`status`, `completed`,
@@ -575,31 +588,20 @@ export class WellMarked {
    * Jobs are retained for 6 hours after completion.
    */
   async getJob(jobId: string): Promise<BulkJob | CrawlJob> {
-    const body = (await this.request("GET", `/bulk/${jobId}`)) as Record<
+    const body = (await this.request("GET", `/jobs/${jobId}`)) as Record<
       string,
       unknown
     >;
-    // /bulk/{id} answers for any jobId today (the endpoint just serializes
-    // results in the bulk shape regardless of stored job_type). The `kind`
-    // field tells us whether we got a bulk-shaped response of a crawl
-    // job; if so, re-fetch via /crawl/{id} for the proper shape.
-    if (body.kind === "crawl") {
-      const crawlBody = (await this.request("GET", `/crawl/${jobId}`)) as Record<
-        string,
-        unknown
-      >;
-      return crawlJobFromResponse(crawlBody);
-    }
-    return bulkJobFromResponse(body);
+    return WellMarked.jobFromBody(body);
   }
 
   /**
    * Block until a job reaches `status="done"` (or timeout). Works for both
    * bulk and crawl jobs.
    *
-   * The first call uses the polymorphic `getJob` to discover the job's
-   * kind. Subsequent polls go directly to the typed endpoint, so a crawl
-   * job only pays the dispatch round-trip once.
+   * Every poll goes to `/jobs/{id}`, which answers for either kind, so there
+   * is no dispatch round-trip to pay and no scope to guess — the loop reads
+   * `kind` off each body.
    *
    * Throws:
    *   - `Error` with message "did not finish within ..." — the job didn't
@@ -614,7 +616,6 @@ export class WellMarked {
     const deadline = timeoutMs === null ? null : Date.now() + timeoutMs;
 
     let job: BulkJob | CrawlJob = await this.getJob(jobId);
-    const isCrawl = job.kind === "crawl";
 
     while (!job.done) {
       if (deadline !== null && Date.now() >= deadline) {
@@ -624,9 +625,11 @@ export class WellMarked {
         );
       }
       await sleep(pollIntervalMs);
-      const path = isCrawl ? `/crawl/${jobId}` : `/bulk/${jobId}`;
-      const body = (await this.request("GET", path)) as Record<string, unknown>;
-      job = isCrawl ? crawlJobFromResponse(body) : bulkJobFromResponse(body);
+      const body = (await this.request("GET", `/jobs/${jobId}`)) as Record<
+        string,
+        unknown
+      >;
+      job = WellMarked.jobFromBody(body);
     }
     return job;
   }
