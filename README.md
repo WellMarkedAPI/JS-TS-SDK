@@ -99,7 +99,7 @@ for (const hit of results.results) {
 }
 ```
 
-`numResults` is clamped to 1..10 server-side. `search` takes the full extraction parameter set — `format` and the [compliance overrides](#compliance-overrides) apply to every result. (It does not take `retry`; its per-result deadline can't absorb one.)
+`numResults` is capped by your plan server-side — Free 5, Pro 10, Growth 50, Enterprise uncapped (no search exceeds the provider's 200-result ceiling). Asking for more returns `422 search_cap_exceeded` naming your cap. `search` takes the full extraction parameter set — `format` and the [compliance overrides](#compliance-overrides) apply to every result. (It does not take `retry`; its per-result deadline can't absorb one.)
 
 ## Bulk extraction
 
