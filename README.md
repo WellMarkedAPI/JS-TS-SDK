@@ -11,6 +11,8 @@ npm install wellmarked
 
 Requires Node.js 18+ (uses the built-in `fetch`). Works in any modern runtime with a global `fetch` — Node 18+, Deno, Bun, Cloudflare Workers, Vercel Edge, browsers.
 
+📖 **[SDK documentation](https://wellmarked.io/docs/sdks/javascript)** · [API reference](https://wellmarked.io/docs/api/extraction/extract) · [Errors](https://wellmarked.io/docs/guides/errors)
+
 ## Quick start
 
 ```typescript
@@ -320,7 +322,7 @@ Pass `webhookIncludeResults: true` on submission to inline the full `results` ar
 * `X-WellMarked-Delivery-Id` is stable across retries — use it as your idempotency key. `X-WellMarked-Timestamp` and `X-WellMarked-Signature` are recomputed every attempt.
 * Treat delivery as **at-least-once**.
 
-See the [Webhooks documentation](https://wellmarked.io/docs#webhooks) for the full signature scheme and header reference.
+See the [Webhooks documentation](https://wellmarked.io/docs/guides/webhooks) for the full signature scheme and header reference.
 
 ## Custom headers
 
